@@ -6,30 +6,24 @@ function Get-LinksFromHTML {
 	param (
 		[string]$html
 	)
-	$Objects = ConvertFrom-HTMLAttributes -Url 'file:///D:/Personal/Projects/windows-fixes-scripts/windows-fixes/test.html' -Tag 'a' -ReturnObject
-	Write-Output $Objects
+
+	# Initialize an array to hold the objects
+	$linkObjects = @()
+
+	# Convert HTML to objects
+	$Objects = ConvertFrom-HTMLAttributes -Content $html -Tag 'a' -ReturnObject
+
 	foreach ($O in $Objects) {
-		Write-Output 'ass'
-		[PSCUstomObject] @{
-			name = $O.href
-			# content = $O.content
+		# Create a new PSCustomObject and add it to the array
+		$linkObjects += [PSCustomObject]@{
+			name    = $O.href
+			content = $O.InnerHtml
 			# comment = $O.comment
 		}
 	}
-	$Output = ConvertFrom-HtmlTable -Content $html
-	Write-Output $Output
-	Write-Output 'yo'
-	# foreach ($O in $Output) {
-	# 	$Header = ConvertFrom-HTMLAttributes -Content $O.InnerHtml -Tag 'td'
-	# 	# $List = ConvertFrom-HTMLAttributes -Content $Header.InnerHtml -Tag 'a'
-	# 	Write-Output $Header
-	# 	# $List
-	# }
-	# Parse the HTML
-	# $parsedHtml = ConvertFrom-HtmlTable -Content $html -Verbose
 
-	# Write-Output $parsedHtml
-
+	# Return the final array of link objects
+	return $linkObjects
 }
 
 # Read HTML input from pipeline
@@ -42,7 +36,13 @@ while ($line = [Console]::In.ReadLine()) {
 $linkObjects = Get-LinksFromHTML -html $htmlContent
 
 # Output the link objects
-$linkObjects | Format-Table -AutoSize
+$linkObjects | Format-Table -Property content
 
-# # Return the final array of link objects
-# return $linkObjects
+# narrow down table to options ending in .appx
+# Look for string related to entry != version number
+# narrow down the above collection to the latest version number, grab link
+# Do this for all items and just hope MS will do their job and keep them all compatible
+# Microsoft.NET.Native.Framework.2.2_2.2.29512.0_x64__8wekyb3d8bbwe.appx
+# Microsoft.NET.Native.Runtime.2.2_2.2.28604.0_x64__8wekyb3d8bbwe.appx
+# Microsoft.VCLibs.140.00_14.0.30704.0_x64__8wekyb3d8bbwe.appx
+# Microsoft.WindowsStore_12107.1001.15.0_neutral_~_8wekyb3d8bbwe.appxbundle
