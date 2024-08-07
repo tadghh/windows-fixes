@@ -166,10 +166,7 @@ function Install-StoreItems {
 	$counter = 0
 
 	#Get the filetypes
-	$installFileTypes = @()
-	foreach ($item in $StoreInstallReqs) {
-		$installFileTypes += $item.filetype
-	}
+	$installFileTypes = $StoreInstallReqs | Select-Object -ExpandProperty filetype -Unique
 
 	# Set our search based on the previous info
 	$goodItems = @()
