@@ -28,16 +28,17 @@ function Get-CurrentDownloads {
 # Function to create a link item
 function Save-LinkItem {
 	param (
-		[string]$href,
-		[string]$innerHtml
+		[string]$downloadLink,
+		[string]$fileName
 	)
 
 	return [PSCustomObject]@{
-		name    = $href
-		content = $innerHtml
+		downloadLink = $downloadLink
+		fileName     = $fileName
 	}
 }
 
+# Shortens the string to its
 function Get-PrettyFileName {
 	param (
 		[string]$dirtyFileName
@@ -56,7 +57,7 @@ function Get-LinksFromHTML {
 	$Objects = ConvertFrom-HTMLAttributes -Content $html -Tag 'a' -ReturnObject
 
 	foreach ($O in $Objects) {
-		$linkObjects += Save-LinkItem -href $O.href -innerHtml $O.InnerHtml
+		$linkObjects += Save-LinkItem -downloadLink $O.href -fileName $O.InnerHtml
 	}
 
 	return $linkObjects
@@ -74,11 +75,11 @@ function Format-Links {
 	$relaventLinks = @()
 
 	foreach ($linkObj in $linkObjects) {
-		$lastPeriodIndex = $linkObj.content.LastIndexOf('.')
+		$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
 
 		$searchLength = $lastPeriodIndex + $searchEnding.Length
-		if ($searchLength -lt $linkObj.content.Length) {
-			$substringAfterLastPeriod = $linkObj.content.Substring($lastPeriodIndex + 1, $searchEnding.Length)
+		if ($searchLength -lt $linkObj.fileName.Length) {
+			$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
 			if ($substringAfterLastPeriod -eq $searchEnding) {
 				$relaventLinks += $linkObj
 			}
@@ -118,9 +119,8 @@ function Get-LatestVersion {
 	if ( $targetString -eq 'Microsoft.WindowsStore') {
 		$packageArch = '*neutral*'
 	}
-
 	$filteredObjects = $linkObjects | Where-Object {
-		$_.content -like "$targetString*" -and $_.content -like $packageArch -and $_.content -like "*$filetype*"
+		$_.fileName -like "$targetString*" -and $_.fileName -like $packageArch -and $_.fileName -like "*$filetype*"
 	}
 	if ($filteredObjects.Count -eq 0) {
 		Write-Host 'No matching link objects found.'
@@ -130,7 +130,7 @@ function Get-LatestVersion {
 	$latestObject = $null
 	$latestVersion = $null
 	foreach ($obj in $filteredObjects) {
-		$version = Get-Version -content $obj.content
+		$version = Get-Version -content $obj.fileName
 		if ($version) {
 			# short circuit evaluation, skips the need to check if $version -gt null
 			if ($null -eq $latestVersion -or [version]$version -gt [version]$latestVersion) {
@@ -139,7 +139,7 @@ function Get-LatestVersion {
 			}
 		}
 	}
-	Write-Host Get-PrettyFileName -dirtyFileName $latestObject.content
+	Write-Host (Get-PrettyFileName -dirtyFileName $latestObject.fileName)
 	Write-Host $latestVersion
 	return $latestObject
 }
@@ -161,6 +161,8 @@ function Install-StoreItems {
 		[PSCustomObject[]]$linkObjects,
 		[PSCustomObject[]]$StoreInstallReqs
 	)
+
+	# Microsoft broke the appx package in PS 7. cant say im surprised
 	Import-Module appx -UseWindowsPowerShell
 
 	$counter = 0
@@ -169,6 +171,7 @@ function Install-StoreItems {
 	$installFileTypes = $StoreInstallReqs | Select-Object -ExpandProperty filetype -Unique
 
 	# Set our search based on the previous info
+	# Narrows down the amount of data processed
 	$goodItems = @()
 	foreach ($item in $installFileTypes) {
 		$goodItems += Format-Links -linkObjects $linkObjects -searchEnding $item
@@ -192,7 +195,7 @@ function Install-StoreItems {
 			Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
 			Write-Host "Finished download: $filename"
 
-		} -ArgumentList $latestVersion.name, $destinationPath, $filename
+		} -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename
 	}
 
 	# Wait for all jobs to complete
@@ -210,6 +213,7 @@ function Install-StoreItems {
 		$itemArch = $installItem.filetype
 		$filename = "item$counter.$itemArch"
 		$destinationPath = Join-Path -Path $PWD -ChildPath $filename
+		Start-Sleep 1
 		Add-AppxPackage -Path $destinationPath
 	}
 
@@ -220,7 +224,7 @@ $StoreInstallReqs = @(
 	[PSCustomObject]@{ name = 'Microsoft.UI.Xaml'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.NET.Native.Framework'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.NET.Native.Runtime'; filetype = 'appx' },
-	[PSCustomObject]@{ name = 'Microsoft.VCLibs.140'; filetype = 'appx' },
+	[PSCustomObject]@{ name = 'Microsoft.VCLibs.140.00_'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.WindowsStore'; filetype = 'msixbundle' }
 
 )
