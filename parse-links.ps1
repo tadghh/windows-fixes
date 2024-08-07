@@ -1,26 +1,46 @@
 # If you are having issues make sure below are installed with admin
 # Set-ExecutionPolicy Unrestricted -Force
-# # Import the PSParseHTML module
-# Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-# Install-Module -Name PSParseHTML -Force
+Write-Output 'Installing modules'
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+	Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
 
-Import-Module PSParseHTML
-# Import-Module appx
+	if (-not (Get-Module -ListAvailable -Name PSParseHTML)) {
+		Install-Module -Name PSParseHTML -Force
+	}
+}
+else {
+	if (-not (Get-Module -ListAvailable -Name PSParseHTML)) {
+		Install-Module -Name PSParseHTML -Force
+	}
+}
+
+if (-not (Get-Module -Name PSParseHTML -ListAvailable)) {
+	Import-Module PSParseHTML
+}
 
 # Returns the api response from adguard
+# TODO if product id is nothing bug occurs
+# NOTE dont use this to install a bunch of application across a network. You should be using Intune or the like
+# This will make post requests to adguard for every product id, since they return html this will get very expensive with 100+ computers
 function Get-CurrentDownloads {
+	param (
+		[string]$productID
+
+	)
 	$url = 'https://store.rg-adguard.net/api/GetFiles'
 	$headers = @{
 		'User-Agent'   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0'
 		'Content-Type' = 'application/x-www-form-urlencoded'
 	}
+
+	#Change the product id at the end of the url to make this work with other products
 	$body = @{
 		type = 'url'
-		url  = 'https://www.microsoft.com/en-us/p/microsoft-store/9wzdncrfjbmp'
+		url  = "https://www.microsoft.com/en-us/p/microsoft-store/$productID"
 		ring = 'RP'
 		lang = 'en-US'
 	}
-
+	Write-Host 'Getting download information'
 	$currentDownloadsHTML = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body
 	return $currentDownloadsHTML
 }
@@ -43,7 +63,11 @@ function Get-PrettyFileName {
 	param (
 		[string]$dirtyFileName
 	)
-	return  $dirtyFileName.Substring(0, $dirtyFileName.indexOf('_'))
+	if ($dirtyFileName.contains('_')) {
+		return $dirtyFileName.Substring(0, $dirtyFileName.indexOf('_'))
+
+	}
+	return $dirtyFileName.Substring(0, $dirtyFileName.LastIndexOf(('.')))
 
 }
 
@@ -53,6 +77,8 @@ function Get-LinksFromHTML {
 	param (
 		[string]$html
 	)
+
+	Write-Host 'Processing download links'
 	$linkObjects = @()
 	$Objects = ConvertFrom-HTMLAttributes -Content $html -Tag 'a' -ReturnObject
 
@@ -73,15 +99,17 @@ function Format-Links {
 		[string]$searchEnding
 	)
 	$relaventLinks = @()
-
+	Write-Host 'Finding relavent links'
 	foreach ($linkObj in $linkObjects) {
-		$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
+		if ($null -ne $linkObj.fileName) {
+			$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
 
-		$searchLength = $lastPeriodIndex + $searchEnding.Length
-		if ($searchLength -lt $linkObj.fileName.Length) {
-			$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
-			if ($substringAfterLastPeriod -eq $searchEnding) {
-				$relaventLinks += $linkObj
+			$searchLength = $lastPeriodIndex + $searchEnding.Length
+			if ($searchLength -lt $linkObj.fileName.Length) {
+				$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
+				if ($substringAfterLastPeriod -eq $searchEnding) {
+					$relaventLinks += $linkObj
+				}
 			}
 		}
 	}
@@ -111,12 +139,12 @@ function Get-LatestVersion {
 		[PSCustomObject[]]$linkObjects,
 		[string]$filetype
 	)
-
+	Write-Host "Selecting Latest version of $(Get-PrettyFileName -dirtyFileName $targetString )"
 	# figure out what arch we are running on
 	# TODO there is a bug here. running this in x86 or an emulated 64 bit powershell instance will return the incorrect version
 	$packageArch = "*$(Get-CPUArch)*"
 
-	if ( $targetString -eq 'Microsoft.WindowsStore') {
+	if ( $targetString -eq 'Microsoft.WindowsStore' -or $targetString -eq 'Microsoft.DesktopAppInstaller') {
 		$packageArch = '*neutral*'
 	}
 	$filteredObjects = $linkObjects | Where-Object {
@@ -139,7 +167,7 @@ function Get-LatestVersion {
 			}
 		}
 	}
-	Write-Host (Get-PrettyFileName -dirtyFileName $latestObject.fileName)
+	Write-Host $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)
 	Write-Host $latestVersion
 	return $latestObject
 }
@@ -163,9 +191,12 @@ function Install-StoreItems {
 	)
 
 	# Microsoft broke the appx package in PS 7. cant say im surprised
-	Import-Module appx -UseWindowsPowerShell
-
-	$counter = 0
+	if ($PSVersionTable.PSVersion.Major -lt 7) {
+		Import-Module appx
+	}
+	else {
+		Import-Module appx -UseWindowsPowerShell
+	}
 
 	#Get the filetypes
 	$installFileTypes = $StoreInstallReqs | Select-Object -ExpandProperty filetype -Unique
@@ -177,64 +208,74 @@ function Install-StoreItems {
 		$goodItems += Format-Links -linkObjects $linkObjects -searchEnding $item
 	}
 
-
+	# Download multiple files at once
 	$jobs = @()
 	foreach ($installItem in $StoreInstallReqs) {
-		$counter++
 		$latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems -filetype $installItem.filetype
-		$itemFileType = $installItem.filetype
-		$filename = "item$counter.$itemFileType"
-		$destinationPath = Join-Path -Path $PWD -ChildPath $filename
+		if ($latestVersion) {
+			$itemFileType = $installItem.filetype
+			$filename = "$($installItem.name).$itemFileType"
+			$destinationPath = Join-Path -Path $PWD -ChildPath $filename
+			$prettyName = Get-PrettyFileName -dirtyFileName $filename
 
-		# Start a new job for each download
-		$jobs += Start-Job -ScriptBlock {
-			param ($sourceUrl, $destinationPath, $filename)
+			$jobs += Start-Job -ScriptBlock {
+				param ($sourceUrl, $destinationPath, $filename, $prettyName)
 
-			Write-Host "Starting download: $filename from $sourceUrl"
+				Write-Host "Starting download: $prettyName from $sourceUrl"
 
-			Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
-			Write-Host "Finished download: $filename"
+				Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
+				Write-Host "Finished download: $filename"
 
-		} -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename
-	}
+			} -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename, $prettyName
+		}
+		else {
+			Write-Host "Latest version not found for $(Get-PrettyFileName -dirtyFileName $installItem.name)"
+		}
+ }
 
 	# Wait for all jobs to complete
-	$jobs | Wait-Job
+	$jobs | Wait-Job | Out-Null
 
 	# Retrieve job results and remove completed jobs
 	$jobs | ForEach-Object {
 		Receive-Job -Job $_
-		Remove-Job -Job $_
+		Remove-Job -Job $_ | Out-Null
 	}
-	$counter = 0
 	foreach ($installItem in $StoreInstallReqs) {
-		$counter++
-		$latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems
-		$itemArch = $installItem.filetype
-		$filename = "item$counter.$itemArch"
+		# $latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems
+		$filename = "$($installItem.name).$itemFileType"
 		$destinationPath = Join-Path -Path $PWD -ChildPath $filename
 		Start-Sleep 1
 		Add-AppxPackage -Path $destinationPath
-	}
+ }
 
 }
 
-
+#9wzdncrfjbmp
 $StoreInstallReqs = @(
 	[PSCustomObject]@{ name = 'Microsoft.UI.Xaml'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.NET.Native.Framework'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.NET.Native.Runtime'; filetype = 'appx' },
+	[PSCustomObject]@{ name = 'Microsoft.VCLibs.140.00.UWPDesktop'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.VCLibs.140.00_'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.WindowsStore'; filetype = 'msixbundle' }
-
+)
+#9NBLGGH4NNS1
+$OtherReqs = @(
+	[PSCustomObject]@{ name = 'Microsoft.DesktopAppInstaller'; filetype = 'msixbundle' }
 )
 
+# $linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads)
 
 # Get the link objects
-$linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads)
+$linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads -productID '9wzdncrfjbmp')
 # $linkObjects = Get-LinksFromHTML -html (Get-Content -Path './test.html')
+
 Install-StoreItems -linkObjects $linkObjects -StoreInstallReqs $StoreInstallReqs
-#Install-StoreItems -linkObjects $linkObjects -StoreInstallReqs $StoreInstallReqs2
+
+# Get DesktopAppInstaller
+$otherReqItems = Get-LinksFromHTML -html (Get-CurrentDownloads -productID '9NBLGGH4NNS1')
+Install-StoreItems -linkObjects $otherReqItems -StoreInstallReqs $OtherReqs
 
 
 # narrow down table to options ending in .appx
