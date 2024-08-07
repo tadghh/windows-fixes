@@ -243,6 +243,8 @@ function Install-StoreItems {
 	}
 	foreach ($installItem in $StoreInstallReqs) {
 		# $latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems
+		$itemFileType = $installItem.filetype
+
 		$filename = "$($installItem.name).$itemFileType"
 		$destinationPath = Join-Path -Path $PWD -ChildPath $filename
 		Start-Sleep 1
