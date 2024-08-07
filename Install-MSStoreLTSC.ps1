@@ -1,3 +1,7 @@
+# Date: August: 7 2024
+# Install Microsoft Store on Windows LTSC, we assume this is a fresh install that has no other software installed
+# Know someone hiring? :)
+
 # If you are having issues make sure below are installed with admin
 # Set-ExecutionPolicy Unrestricted -Force
 Write-Output 'Installing modules'
