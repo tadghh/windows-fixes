@@ -10,5 +10,5 @@ The script can be run with PowerShell 5 - 7, just make sure to run with Admin. I
 Start-BitsTransfer -Source 'https://raw.githubusercontent.com/tadghh/windows-fixes/main/Install-MSStoreLTSC.ps1' -Destination ./store-install.ps1;
 Set-ExecutionPolicy Unrestricted -Force;
 ./store-install.ps1;
-Set-ExecutionPolicy restricted -Force;
+Set-ExecutionPolicy RemoteSigned -Force;
 ```
