@@ -1,9 +1,13 @@
+#Requires -RunAsAdministrator
+
 # Date: August: 7 2024
 # Install Microsoft Store on Windows LTSC, we assume this is a fresh install that has no other software installed
 # Know someone hiring? :)
 
+# Updated: Sept: 7 2024
+# More robust host architecture detection, simplified searching logic. Added pseudo error handling, we can usually ignore these anyways.
+
 # If you are having issues make sure below are installed with admin
-# Set-ExecutionPolicy Unrestricted -Force
 Write-Output 'Installing modules'
 if ($PSVersionTable.PSVersion.Major -lt 7) {
 	Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
@@ -23,13 +27,12 @@ if (-not (Get-Module -Name PSParseHTML -ListAvailable)) {
 }
 
 # Returns the api response from adguard
-# TODO if product id is nothing bug occurs
-# NOTE dont use this to install a bunch of application across a network. You should be using Intune or the like
+# NOTE dont use this to install a bunch of applications across a network. You should be using Intune or the like
 # This will make post requests to adguard for every product id, since they return html this will get very expensive with 100+ computers
 function Get-CurrentDownloads {
 	param (
+		[Parameter(Mandatory = $true)]
 		[string]$productID
-
 	)
 	$url = 'https://store.rg-adguard.net/api/GetFiles'
 	$headers = @{
@@ -65,6 +68,7 @@ function Save-LinkItem {
 # Shortens the string to its
 function Get-PrettyFileName {
 	param (
+		[Parameter(Mandatory = $true)]
 		[string]$dirtyFileName
 	)
 	if ($dirtyFileName.contains('_')) {
@@ -79,6 +83,7 @@ function Get-PrettyFileName {
 # No idea why they return HTML, suppose its to deter 'projects like this'
 function Get-LinksFromHTML {
 	param (
+		[Parameter(Mandatory = $true)]
 		[string]$html
 	)
 
@@ -99,11 +104,13 @@ function Format-Links {
 	param (
 		[Parameter(Mandatory = $true)]
 		[PSCustomObject[]]$linkObjects,
+
 		[Parameter(Mandatory = $true)]
 		[string]$searchEnding
 	)
-	# $relaventLinks = @()
+
 	Write-Host 'Finding relavent links'
+	# $relaventLinks = @()
 	# foreach ($linkObj in $linkObjects) {
 	# 	if ($null -ne $linkObj.fileName) {
 	# 		$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
@@ -127,64 +134,84 @@ function Format-Links {
 
 
 # Gets the current devices cpu arch
-# TODO bug: it does in fact not get the current computers arch but the current process
 function Get-CPUArch {
-	switch ($env:PROCESSOR_ARCHITECTURE) {
-		'AMD64' { 'x64' }
-		'ARM64' { 'arm64' }
-		'ARM' { 'arm' }
-		'x86' { 'x86' }
+	# First switch on PROCESSOR_ARCHITEW6432 to check if it's a 64-bit system running a 32-bit process
+	switch ($env:PROCESSOR_ARCHITEW6432) {
+		'AMD64' { return 'x64' }
+		# valid https://github.com/pyinstaller/pyinstaller/issues/8219#issuecomment-1889817050
+		'ARM64' { return 'arm64' }
+		default {
+			# If PROCESSOR_ARCHITEW6432 is not set, check PROCESSOR_ARCHITECTURE for the current process architecture
+			switch ($env:PROCESSOR_ARCHITECTURE) {
+				'AMD64' { return 'x64' }
+				'ARM64' { return 'arm64' }
+				'x86' { return 'x86' }
+				# Not sure this is valid
+				'ARM' { return 'arm' }  # 32-bit ARM system
+				default { throw "Unknown architecture: $($env:PROCESSOR_ARCHITECTURE)" }
+			}
+		}
 	}
 }
+
 
 # Gets the latest version in comparison to others
 function Get-LatestVersion {
 	param (
 		[Parameter(Mandatory = $true)]
-
 		[string]$targetString,
-		[Parameter(Mandatory = $true)]
 
+		[Parameter(Mandatory = $true)]
+		[string]$packageArch,
+
+		[Parameter(Mandatory = $true)]
 		[PSCustomObject[]]$linkObjects,
+
+		[Parameter(Mandatory = $true)]
 		[string]$filetype
 	)
 	Write-Host "Selecting Latest version of $(Get-PrettyFileName -dirtyFileName $targetString )"
-	# figure out what arch we are running on
-	# TODO there is a bug here. running this in x86 or an emulated 64 bit powershell instance will return the incorrect version
-	$packageArch = "*$(Get-CPUArch)*"
+	try {
+		$packageArch = "*$(Get-CPUArch)*"
 
-	if ( $targetString -eq 'Microsoft.WindowsStore' -or $targetString -eq 'Microsoft.DesktopAppInstaller') {
-		$packageArch = '*neutral*'
-	}
-	$filteredObjects = $linkObjects | Where-Object {
-		$_.fileName -like "$targetString*" -and $_.fileName -like $packageArch -and $_.fileName -like "*$filetype*"
-	}
-	if ($filteredObjects.Count -eq 0) {
-		Write-Host 'No matching link objects found.'
-		return
-	}
-	# Find the latest version
-	$latestObject = $null
-	$latestVersion = $null
-	foreach ($obj in $filteredObjects) {
-		$version = Get-Version -content $obj.fileName
-		if ($version) {
-			# short circuit evaluation, skips the need to check if $version -gt null
-			if ($null -eq $latestVersion -or [version]$version -gt [version]$latestVersion) {
-				$latestVersion = $version
-				$latestObject = $obj
+		if ( $targetString -eq 'Microsoft.WindowsStore' -or $targetString -eq 'Microsoft.DesktopAppInstaller') {
+			$packageArch = '*neutral*'
+		}
+		$filteredObjects = $linkObjects | Where-Object {
+			$_.fileName -like "$targetString*" -and $_.fileName -like $packageArch -and $_.fileName -like "*$filetype*"
+		}
+		if ($filteredObjects.Count -eq 0) {
+			Write-Host 'No matching link objects found.'
+			return $null
+		}
+		# Find the latest version
+		$latestObject = $null
+		$latestVersion = $null
+		foreach ($obj in $filteredObjects) {
+			$version = Get-Version -content $obj.fileName
+			if ($version) {
+				# short circuit evaluation, skips the need to check if $version -gt null
+				if ($null -eq $latestVersion -or [version]$version -gt [version]$latestVersion) {
+					$latestVersion = $version
+					$latestObject = $obj
+				}
 			}
 		}
+		Write-Host $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)
+		Write-Host $latestVersion
+		return $latestObject
+ }
+	catch {
+		Write-Host "Failed in Get-LatestVersion: Error: ${$_.Exception.Message}"
+		return $null
 	}
-	Write-Host $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)
-	Write-Host $latestVersion
-	return $latestObject
 }
 
 # Gets the version number based on the input like below
 # Microsoft.NET.Native.Framework.2.2_2.2.29512.0_x64__8wekyb3d8bbwe.appx
 function Get-Version {
 	param (
+		[Parameter(Mandatory = $true)]
 		[string]$content
 	)
 	$regex = [regex]'\d+\.\d+\.\d+\.\d+'
@@ -195,7 +222,10 @@ function Get-Version {
 }
 function Install-StoreItems {
 	param (
+		[Parameter(Mandatory = $true)]
 		[PSCustomObject[]]$linkObjects,
+
+		[Parameter(Mandatory = $true)]
 		[PSCustomObject[]]$StoreInstallReqs
 	)
 
@@ -219,28 +249,36 @@ function Install-StoreItems {
 
 	# Download multiple files at once
 	$jobs = @()
-	foreach ($installItem in $StoreInstallReqs) {
-		$latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems -filetype $installItem.filetype
-		if ($latestVersion) {
-			$itemFileType = $installItem.filetype
-			$filename = "$($installItem.name).$itemFileType"
-			$destinationPath = Join-Path -Path $PWD -ChildPath $filename
-			$prettyName = Get-PrettyFileName -dirtyFileName $filename
 
-			$jobs += Start-Job -ScriptBlock {
-				param ($sourceUrl, $destinationPath, $filename, $prettyName)
+	# Override this if its null, needs to match the aval arch in the filenames of the downloaded packages. You can check this on the adguard store page using the product ID provided below
+	$hostArch = "*$(Get-CPUArch)*"
+	if ($null -ne $hostArch) {
+		foreach ($installItem in $StoreInstallReqs) {
+			$latestVersion = Get-LatestVersion -targetString $installItem.name -packageArch $hostArch -linkObjects $goodItems -filetype $installItem.filetype
+			if ($latestVersion) {
+				$itemFileType = $installItem.filetype
+				$filename = "$($installItem.name).$itemFileType"
+				$destinationPath = Join-Path -Path $PWD -ChildPath $filename
+				$prettyName = Get-PrettyFileName -dirtyFileName $filename
 
-				Write-Host "Starting download: $prettyName from $sourceUrl"
+				$jobs += Start-Job -ScriptBlock {
+					param ($sourceUrl, $destinationPath, $filename, $prettyName)
 
-				Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
-				Write-Host "Finished download: $filename"
+					Write-Host "Starting download: $prettyName from $sourceUrl"
 
-			} -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename, $prettyName
+					Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
+					Write-Host "Finished download: $filename"
+
+				} -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename, $prettyName
+			}
+			else {
+				Write-Host "Latest version not found for $(Get-PrettyFileName -dirtyFileName $installItem.name)"
+			}
 		}
-		else {
-			Write-Host "Latest version not found for $(Get-PrettyFileName -dirtyFileName $installItem.name)"
-		}
- }
+	}
+	else {
+		Write-Host 'Unknown host architecture, feel free to override this in the Install-StoreItems function'
+	}
 
 	# Wait for all jobs to complete
 	$jobs | Wait-Job | Out-Null
@@ -251,7 +289,6 @@ function Install-StoreItems {
 		Remove-Job -Job $_ | Out-Null
 	}
 	foreach ($installItem in $StoreInstallReqs) {
-		# $latestVersion = Get-LatestVersion -targetString $installItem.name -linkObjects $goodItems
 		$itemFileType = $installItem.filetype
 
 		$filename = "$($installItem.name).$itemFileType"
@@ -262,12 +299,12 @@ function Install-StoreItems {
 			Write-Host "Successfully installed package: $($installItem.name)"
 		}
 		catch {
-			Write-Host "Failed to install package: $($installItem.name). Error: $_"
-			# Additional error handling logic can be added here, e.g. logging or skipping.
+			Write-Host "Failed to install package: $($installItem.name). Error: ${$_.Exception.Message}"
 		}
  }
-
 }
+
+### PRODUCT IDS ###
 
 $MSStoreID = '9wzdncrfjbmp'
 #9wzdncrfjbmp
@@ -288,7 +325,6 @@ $OtherReqs = @(
 
 # Get the link objects
 $linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads -productID $MSStoreID )
-# $linkObjects = Get-LinksFromHTML -html (Get-Content -Path './test.html')
 
 Install-StoreItems -linkObjects $linkObjects -StoreInstallReqs $StoreInstallReqs
 
