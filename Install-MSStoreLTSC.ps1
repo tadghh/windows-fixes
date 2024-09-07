@@ -76,7 +76,7 @@ function Get-PrettyFileName {
 }
 
 # Processes the api call to adguard store
-# No idea why they return HTML, suppose its to deter this itself
+# No idea why they return HTML, suppose its to deter 'projects like this'
 function Get-LinksFromHTML {
 	param (
 		[string]$html
@@ -102,20 +102,25 @@ function Format-Links {
 		[Parameter(Mandatory = $true)]
 		[string]$searchEnding
 	)
-	$relaventLinks = @()
+	# $relaventLinks = @()
 	Write-Host 'Finding relavent links'
-	foreach ($linkObj in $linkObjects) {
-		if ($null -ne $linkObj.fileName) {
-			$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
+	# foreach ($linkObj in $linkObjects) {
+	# 	if ($null -ne $linkObj.fileName) {
+	# 		$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
 
-			$searchLength = $lastPeriodIndex + $searchEnding.Length
-			if ($searchLength -lt $linkObj.fileName.Length) {
-				$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
-				if ($substringAfterLastPeriod -eq $searchEnding) {
-					$relaventLinks += $linkObj
-				}
-			}
-		}
+	# 		if (-1 -ne $lastPeriodIndex) {
+	# 			$searchLength = $lastPeriodIndex + $searchEnding.Length
+	# 			if ($searchLength -lt $linkObj.fileName.Length) {
+	# 				$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
+	# 				if ($substringAfterLastPeriod -eq $searchEnding) {
+	# 					$relaventLinks += $linkObj
+	# 				}
+	# 			}
+	# 		}
+	# 	}
+	# }
+	$relaventLinks = $linkObjects | Where-Object {
+		$_.fileName -and $_.fileName.EndsWith($searchEnding)
 	}
 	return $relaventLinks
 }
@@ -252,11 +257,19 @@ function Install-StoreItems {
 		$filename = "$($installItem.name).$itemFileType"
 		$destinationPath = Join-Path -Path $PWD -ChildPath $filename
 		Start-Sleep 1
-		Add-AppxPackage -Path $destinationPath
+		try {
+			Add-AppxPackage -Path $destinationPath
+			Write-Host "Successfully installed package: $($installItem.name)"
+		}
+		catch {
+			Write-Host "Failed to install package: $($installItem.name). Error: $_"
+			# Additional error handling logic can be added here, e.g. logging or skipping.
+		}
  }
 
 }
 
+$MSStoreID = '9wzdncrfjbmp'
 #9wzdncrfjbmp
 $StoreInstallReqs = @(
 	[PSCustomObject]@{ name = 'Microsoft.UI.Xaml'; filetype = 'appx' },
@@ -266,21 +279,21 @@ $StoreInstallReqs = @(
 	[PSCustomObject]@{ name = 'Microsoft.VCLibs.140.00_'; filetype = 'appx' },
 	[PSCustomObject]@{ name = 'Microsoft.WindowsStore'; filetype = 'msixbundle' }
 )
+
+$DesktopAppInstallerID = '9NBLGGH4NNS1'
 #9NBLGGH4NNS1
 $OtherReqs = @(
 	[PSCustomObject]@{ name = 'Microsoft.DesktopAppInstaller'; filetype = 'msixbundle' }
 )
 
-# $linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads)
-
 # Get the link objects
-$linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads -productID '9wzdncrfjbmp')
+$linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads -productID $MSStoreID )
 # $linkObjects = Get-LinksFromHTML -html (Get-Content -Path './test.html')
 
 Install-StoreItems -linkObjects $linkObjects -StoreInstallReqs $StoreInstallReqs
 
 # Get DesktopAppInstaller
-$otherReqItems = Get-LinksFromHTML -html (Get-CurrentDownloads -productID '9NBLGGH4NNS1')
+$otherReqItems = Get-LinksFromHTML -html (Get-CurrentDownloads -productID $DesktopAppInstallerID)
 Install-StoreItems -linkObjects $otherReqItems -StoreInstallReqs $OtherReqs
 
 
