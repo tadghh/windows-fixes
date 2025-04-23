@@ -16,3 +16,5 @@ Set-ExecutionPolicy Unrestricted -Force;
 ./store-install.ps1;
 Set-ExecutionPolicy RemoteSigned -Force 
 ```
+# SSH Copy ID
+A simple script to copy your ssh keys to the host [see](https://github.com/tadghh/windows-fixes/blob/main/ssh-copy-id.ps1). This would typically be added to your pwoershell `$PROFILE`
