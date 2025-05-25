@@ -24,3 +24,9 @@ A [script](https://github.com/tadghh/windows-fixes/blob/main/Toggle-PowerSetting
 
 # Skip pending update reboots
 The following [script](https://github.com/tadghh/windows-fixes/blob/main/Skip-UpdateReboot.ps1) remove the pending updates file. Think of this like a dirty update/reboot. You make encounter errors by using this bypass but I would find that unlikely (there are a lot of'you must reboot to complete install' that dont actually need a reboot) 
+
+# Copy-SSHId
+Its just ssh-copy-id but for windows. Add the function inside your `$PROFILE` and optionally include the following alias. 
+```ps1
+Set-Alias -Name ssh-copy-id -Value Copy-SSHId
+```
