@@ -1,22 +1,55 @@
-#Requires -RunAsAdministrator
-# If you are having issues make sure below are installed with admin
-Write-Output 'Installing modules'
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-  Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+function Start-Setup() {
+  $policy = Get-ExecutionPolicy
 
-  if (-not (Get-Module -ListAvailable -Name PSParseHTML)) {
-    Install-Module -Name PSParseHTML -Force
+  if ($policy -eq 'Restricted') {
+    Write-Host 'Scripts are not allowed. This script requires scripts to run.'
+
+    $answer = Read-Host 'Do you want to enable scripts for this session? (Y/N)'
+
+    if ($answer -match '^[Yy]$') {
+      Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+      Write-Host 'Scripts are now enabled for this session.'
+    }
+    else {
+      Write-Host 'Cannot continue. Exiting script.'
+      exit
+    }
+  }
+  else {
+    Write-Host 'Scripts are allowed.'
+  }
+
+  # If you are having issues make sure below are installed with admin
+  Write-Output 'Installing modules'
+  if ($PSVersionTable.PSVersion.Major -lt 7) {
+    try {
+      Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+    }
+    catch {
+      Write-Warning "Failed to install NuGet provider: $_"
+    }
+
+  }
+
+  try {
+    if (-not (Get-Module -ListAvailable -Name PSParseHTML)) {
+      Install-Module -Name PSParseHTML -Force -Scope CurrentUser -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+    }
+  }
+  catch {
+    Write-Warning "Failed to install PSParseHTML: $_"
+  }
+
+  try {
+    if (-not (Get-Module -Name PSParseHTML)) {
+      Import-Module PSParseHTML -ErrorAction Stop | Out-Null
+    }
+  }
+  catch {
+    Write-Warning "Failed to import PSParseHTML: $_"
   }
 }
-else {
-  if (-not (Get-Module -ListAvailable -Name PSParseHTML)) {
-    Install-Module -Name PSParseHTML -Force
-  }
-}
 
-if (-not (Get-Module -Name PSParseHTML -ListAvailable)) {
-  Import-Module PSParseHTML
-}
 
 # Returns the api response from adguard
 # NOTE dont use this to install a bunch of applications across a network. You should be using Intune or the like
@@ -63,12 +96,12 @@ function Get-PrettyFileName {
     [Parameter(Mandatory = $true)]
     [string]$dirtyFileName
   )
-  if ($dirtyFileName.contains('_')) {
-    return $dirtyFileName.Substring(0, $dirtyFileName.indexOf('_'))
 
+  switch -Regex ($dirtyFileName) {
+    '_' { return $dirtyFileName.Substring(0, $dirtyFileName.IndexOf('_')) }
+    '\.' { return $dirtyFileName.Substring(0, $dirtyFileName.LastIndexOf('.')) }
+    default { return $dirtyFileName }
   }
-  return $dirtyFileName.Substring(0, $dirtyFileName.LastIndexOf(('.')))
-
 }
 
 # Processes the api call to adguard store
@@ -101,29 +134,12 @@ function Format-Links {
     [string]$searchEnding
   )
 
-  Write-Host 'Finding relavent links'
-  # $relaventLinks = @()
-  # foreach ($linkObj in $linkObjects) {
-  # 	if ($null -ne $linkObj.fileName) {
-  # 		$lastPeriodIndex = $linkObj.fileName.LastIndexOf('.')
-
-  # 		if (-1 -ne $lastPeriodIndex) {
-  # 			$searchLength = $lastPeriodIndex + $searchEnding.Length
-  # 			if ($searchLength -lt $linkObj.fileName.Length) {
-  # 				$substringAfterLastPeriod = $linkObj.fileName.Substring($lastPeriodIndex + 1, $searchEnding.Length)
-  # 				if ($substringAfterLastPeriod -eq $searchEnding) {
-  # 					$relaventLinks += $linkObj
-  # 				}
-  # 			}
-  # 		}
-  # 	}
-  # }
   $relaventLinks = $linkObjects | Where-Object {
     $_.fileName -and $_.fileName.EndsWith($searchEnding)
   }
+
   return $relaventLinks
 }
-
 
 # Gets the current devices cpu arch
 function Get-CPUArch {
@@ -146,7 +162,6 @@ function Get-CPUArch {
   }
 }
 
-
 # Gets the latest version in comparison to others
 function Get-LatestVersion {
   param (
@@ -162,35 +177,39 @@ function Get-LatestVersion {
     [Parameter(Mandatory = $true)]
     [string]$filetype
   )
-  Write-Host "Selecting Latest version of $(Get-PrettyFileName -dirtyFileName $targetString )"
+
+
   try {
     $packageArch = "*$(Get-CPUArch)*"
 
     if ( $targetString -eq 'Microsoft.WindowsStore' -or $targetString -eq 'Microsoft.DesktopAppInstaller') {
       $packageArch = '*neutral*'
     }
+
     $filteredObjects = $linkObjects | Where-Object {
       $_.fileName -like "$targetString*" -and $_.fileName -like $packageArch -and $_.fileName -like "*$filetype*"
     }
+
     if ($filteredObjects.Count -eq 0) {
       Write-Host 'No matching link objects found.'
       return $null
     }
-    # Find the latest version
+
     $latestObject = $null
     $latestVersion = $null
     foreach ($obj in $filteredObjects) {
       $version = Get-Version -content $obj.fileName
       if ($version) {
-        # short circuit evaluation, skips the need to check if $version -gt null
         if ($null -eq $latestVersion -or [version]$version -gt [version]$latestVersion) {
           $latestVersion = $version
           $latestObject = $obj
         }
       }
     }
-    Write-Host $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)
-    Write-Host $latestVersion
+    Write-Host "`nSelecting Latest version of $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)"
+    Write-Host "Name: $(Get-PrettyFileName -dirtyFileName $latestObject.fileName)"
+    Write-Host "Version: $latestVersion"
+
     return $latestObject
   }
   catch {
@@ -212,6 +231,45 @@ function Get-Version {
   }
   return $null
 }
+
+# Function to terminate running apps before installation
+function Stop-AppxProcess {
+  param (
+    [Parameter(Mandatory = $true)]
+    [string]$packageName
+  )
+
+  try {
+    $processes = Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.CommandLine -like "*$packageName*" -or $_.Name -like "*$packageName*"
+    }
+
+    foreach ($proc in $processes) {
+      try {
+        $svc = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+          $_.Name -like "*$($proc.Name)*"
+        }
+        if ($svc) {
+          Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+        }
+      }
+      catch {
+        Write-Warning "Could not stop service for $($proc.Name): $($_.Exception.Message)"
+      }
+
+      try {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+      }
+      catch {
+        Write-Warning "Could not kill process $($proc.Name): $($_.Exception.Message)"
+      }
+    }
+  }
+  catch {
+    Write-Warning "Error in Stop-AppxProcess for $packageName`: $($_.Exception.Message)"
+  }
+}
+
 function Install-StoreItems {
   param (
     [Parameter(Mandatory = $true)]
@@ -226,10 +284,9 @@ function Install-StoreItems {
     Import-Module appx
   }
   else {
-    Import-Module appx -UseWindowsPowerShell
+    Import-Module Appx -UseWindowsPowerShell -WarningAction SilentlyContinue
   }
 
-  #Get the filetypes
   $installFileTypes = $StoreInstallReqs | Select-Object -ExpandProperty filetype -Unique
 
   # Set our search based on the previous info
@@ -239,28 +296,30 @@ function Install-StoreItems {
     $goodItems += Format-Links -linkObjects $linkObjects -searchEnding $item
   }
 
-  # Download multiple files at once
   $jobs = @()
 
   # Override this if its null, needs to match the aval arch in the filenames of the downloaded packages. You can check this on the adguard store page using the product ID provided below
   $hostArch = "*$(Get-CPUArch)*"
   if ($null -ne $hostArch) {
+
     foreach ($installItem in $StoreInstallReqs) {
       $latestVersion = Get-LatestVersion -targetString $installItem.name -packageArch $hostArch -linkObjects $goodItems -filetype $installItem.filetype
+
       if ($latestVersion) {
         $itemFileType = $installItem.filetype
         $filename = "$($installItem.name).$itemFileType"
-        $destinationPath = Join-Path -Path $PWD -ChildPath $filename
         $prettyName = Get-PrettyFileName -dirtyFileName $filename
+
+        $destinationPath = Join-Path -Path $PWD -ChildPath $filename
 
         $jobs += Start-Job -ScriptBlock {
           param ($sourceUrl, $destinationPath, $filename, $prettyName)
 
-          Write-Host "Starting download: $prettyName from $sourceUrl"
+          Write-Host "`nStarting download: $prettyName"
 
           Start-BitsTransfer -Source $sourceUrl -Destination $destinationPath
-          Write-Host "Finished download: $filename"
 
+          Write-Host "Finished download: $prettyName"
         } -ArgumentList $latestVersion.downloadLink, $destinationPath, $filename, $prettyName
       }
       else {
@@ -280,13 +339,17 @@ function Install-StoreItems {
     Receive-Job -Job $_
     Remove-Job -Job $_ | Out-Null
   }
+
   foreach ($installItem in $StoreInstallReqs) {
     $itemFileType = $installItem.filetype
 
-    $filename = "$($installItem.name).$itemFileType"
-    $destinationPath = Join-Path -Path $PWD -ChildPath $filename
+    Stop-AppxProcess -packageName $installItem.name
     Start-Sleep 1
+
     try {
+      $filename = "$($installItem.name).$itemFileType"
+      $destinationPath = Join-Path -Path $PWD -ChildPath $filename
+
       Add-AppxPackage -Path $destinationPath
       Write-Host "Successfully installed package: $($installItem.name)"
     }
@@ -297,9 +360,7 @@ function Install-StoreItems {
 }
 
 ### PRODUCT IDS ###
-
 $MSStoreID = '9wzdncrfjbmp'
-#9wzdncrfjbmp
 $StoreInstallReqs = @(
   [PSCustomObject]@{ name = 'Microsoft.UI.Xaml'; filetype = 'appx' },
   [PSCustomObject]@{ name = 'Microsoft.NET.Native.Framework'; filetype = 'appx' },
@@ -310,20 +371,26 @@ $StoreInstallReqs = @(
 )
 
 $DesktopAppInstallerID = '9NBLGGH4NNS1'
-#9NBLGGH4NNS1
 $OtherReqs = @(
   [PSCustomObject]@{ name = 'Microsoft.DesktopAppInstaller'; filetype = 'msixbundle' }
 )
 
-# Get the link objects
+Start-Setup
 $linkObjects = Get-LinksFromHTML -html (Get-CurrentDownloads -productID $MSStoreID )
 
 Install-StoreItems -linkObjects $linkObjects -StoreInstallReqs $StoreInstallReqs
 
-# Get DesktopAppInstaller
 $otherReqItems = Get-LinksFromHTML -html (Get-CurrentDownloads -productID $DesktopAppInstallerID)
 Install-StoreItems -linkObjects $otherReqItems -StoreInstallReqs $OtherReqs
 
+if (Get-Module -ListAvailable -Name PSParseHTML) {
+  Write-Host 'Removing PSParseHTML'
+
+  [System.GC]::Collect()
+  [System.GC]::WaitForPendingFinalizers()
+
+  Get-Module PSParseHTML | Remove-Module -Force -ErrorAction SilentlyContinue
+}
 
 # narrow down table to options ending in .appx
 # Look for string related to entry != version number
